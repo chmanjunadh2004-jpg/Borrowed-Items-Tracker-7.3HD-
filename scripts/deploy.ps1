@@ -9,84 +9,93 @@ $ErrorActionPreference = 'Stop'
 
 $base = Join-Path $env:ProgramData 'Jenkins\.jenkins\deployments\BorrowedItemsTracker'
 $folder = Join-Path $base $Target
-$pidFile = Join-Path $base "$Target.pid"
-$package = Get-ChildItem $env:WORKSPACE -Filter 'borroweditemstracker-*.tgz' |
-    Select-Object -First 1
-
-if (-not $package) {
-    throw 'Build package was not found.'
-}
+$appFile = Join-Path $folder 'node_modules\borroweditemstracker\index.js'
+$dataFile = Join-Path $base "$Target-items.json"
+$logFile = Join-Path $base "$Target-output.log"
+$runnerFile = Join-Path $base "$Target-run.cmd"
 
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 
-# Stop the previous copy, if it is still running.
-if (Test-Path $pidFile) {
-    $oldId = [int](Get-Content $pidFile)
-    $oldProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $oldId"
+$package = Get-ChildItem -Path $env:WORKSPACE -Filter 'borroweditemstracker-*.tgz' |
+    Select-Object -First 1
 
-    if ($oldProcess -and
-        $oldProcess.Name -eq 'node.exe' -and
-        $oldProcess.CommandLine -like "*$folder*") {
-        Stop-Process -Id $oldId -Force
-        Start-Sleep -Seconds 1
+if (-not $package) {
+    throw "No application package was found in the Jenkins workspace."
+}
+
+# Stop the previous copy of this app if it is using this port.
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+
+if ($listener) {
+    $oldProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
+
+    if (-not $oldProcess -or $oldProcess.CommandLine -notlike "*$appFile*") {
+        throw "Port $Port is being used by another program. Deployment stopped safely."
     }
+
+    Stop-Process -Id $listener.OwningProcess -Force
+    Start-Sleep -Seconds 2
 }
 
-# Install the package made by Jenkins.
 if (Test-Path $folder) {
-    Remove-Item $folder -Recurse -Force
+    Remove-Item -Path $folder -Recurse -Force
 }
+
 New-Item -ItemType Directory -Path $folder -Force | Out-Null
 
 & npm.cmd install --no-save --omit=dev --prefix $folder $package.FullName
+
 if ($LASTEXITCODE -ne 0) {
-    throw "Package installation failed for $Target."
+    throw "Installing the application failed."
 }
 
-$appFile = Join-Path $folder 'node_modules\borroweditemstracker\index.js'
 if (-not (Test-Path $appFile)) {
-    throw "Application file was not installed for $Target."
+    throw "The application file was not found after installation."
 }
 
-$env:PORT = [string]$Port
-$env:DATA_FILE = Join-Path $base "$Target-items.json"
-$env:NODE_ENV = 'production'
-$env:JENKINS_NODE_COOKIE = 'dontKillMe'
+$runnerLines = @(
+    '@echo off'
+    "set `"PORT=$Port`""
+    "set `"DATA_FILE=$dataFile`""
+    'set "NODE_ENV=production"'
+    'set "JENKINS_NODE_COOKIE=dontKillMe"'
+    "cd /d `"$folder`""
+    "node.exe `"$appFile`" >> `"$logFile`" 2>&1"
+)
 
-# Give the background app its own input, output, and error files.
-$inputFile = Join-Path $base 'empty-input.txt'
-New-Item -ItemType File -Path $inputFile -Force | Out-Null
+Set-Content -Path $runnerFile -Value $runnerLines -Encoding ASCII
 
-$server = Start-Process -FilePath (Get-Command node.exe).Source `
-    -ArgumentList ('"' + $appFile + '"') `
-    -WorkingDirectory $folder `
-    -RedirectStandardInput $inputFile `
-    -RedirectStandardOutput (Join-Path $base "$Target-output.log") `
-    -RedirectStandardError (Join-Path $base "$Target-error.log") `
-    -PassThru
+& cscript.exe //NoLogo (Join-Path $PSScriptRoot 'start-detached.js') $runnerFile
 
-Set-Content -Path $pidFile -Value $server.Id
+if ($LASTEXITCODE -ne 0) {
+    throw "Starting the application failed."
+}
 
-# Check that the app actually started.
-for ($attempt = 1; $attempt -le 10; $attempt++) {
+for ($attempt = 1; $attempt -le 15; $attempt++) {
     Start-Sleep -Seconds 1
-    $server.Refresh()
-
-    if ($server.HasExited) {
-        throw "$Target application stopped unexpectedly."
-    }
 
     try {
         $health = Invoke-RestMethod "http://localhost:$Port/health" -TimeoutSec 2
 
         if ($health.status -eq 'ok') {
+            $newListener = Get-NetTCPConnection -LocalPort $Port -State Listen |
+                Select-Object -First 1
+
+            $newProcess = Get-CimInstance Win32_Process `
+                -Filter "ProcessId = $($newListener.OwningProcess)"
+
+            if ($newProcess.CommandLine -notlike "*$appFile*") {
+                throw "Another program answered the health check."
+            }
+
             Write-Host "$Target is healthy at http://localhost:$Port"
             exit 0
         }
     }
     catch {
-        # Try again while the app starts.
+        # Give the application another second to start.
     }
 }
 
-throw "$Target did not pass its health check on port $Port."
+throw "$Target did not start correctly. Check $logFile"
