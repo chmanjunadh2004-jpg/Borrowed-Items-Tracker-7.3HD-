@@ -11,5 +11,11 @@ pipeline {
                 archiveArtifacts artifacts: '*.tgz', fingerprint: true
             }
         }
+
+        stage('Test') {
+            steps {
+                bat 'npm.cmd test'
+            }
+        }
     }
 }
