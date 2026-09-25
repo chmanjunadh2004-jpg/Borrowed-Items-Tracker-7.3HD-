@@ -22,6 +22,12 @@ pipeline {
                 bat 'npm.cmd run lint'
             }
         }
+        stage('Security') {
+            steps {
+                bat 'npm.cmd audit --audit-level=high'
+            }
+        }
+        
 
     }
 }
