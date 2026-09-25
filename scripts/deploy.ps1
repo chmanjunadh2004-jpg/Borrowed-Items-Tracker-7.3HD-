@@ -19,7 +19,7 @@ if (-not $package) {
 
 New-Item -ItemType Directory -Path $base -Force | Out-Null
 
-# Stop the previous copy of this environment, if one is running.
+# Stop the previous copy, if it is still running.
 if (Test-Path $pidFile) {
     $oldId = [int](Get-Content $pidFile)
     $oldProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $oldId"
@@ -32,7 +32,7 @@ if (Test-Path $pidFile) {
     }
 }
 
-# Install the package built by Jenkins into a separate folder.
+# Install the package made by Jenkins.
 if (Test-Path $folder) {
     Remove-Item $folder -Recurse -Force
 }
@@ -53,16 +53,21 @@ $env:DATA_FILE = Join-Path $base "$Target-items.json"
 $env:NODE_ENV = 'production'
 $env:JENKINS_NODE_COOKIE = 'dontKillMe'
 
+# Give the background app its own input, output, and error files.
+$inputFile = Join-Path $base 'empty-input.txt'
+New-Item -ItemType File -Path $inputFile -Force | Out-Null
+
 $server = Start-Process -FilePath (Get-Command node.exe).Source `
     -ArgumentList ('"' + $appFile + '"') `
     -WorkingDirectory $folder `
+    -RedirectStandardInput $inputFile `
     -RedirectStandardOutput (Join-Path $base "$Target-output.log") `
     -RedirectStandardError (Join-Path $base "$Target-error.log") `
     -PassThru
 
 Set-Content -Path $pidFile -Value $server.Id
 
-# Only pass the stage when this app responds successfully.
+# Check that the app actually started.
 for ($attempt = 1; $attempt -le 10; $attempt++) {
     Start-Sleep -Seconds 1
     $server.Refresh()
@@ -73,13 +78,14 @@ for ($attempt = 1; $attempt -le 10; $attempt++) {
 
     try {
         $health = Invoke-RestMethod "http://localhost:$Port/health" -TimeoutSec 2
+
         if ($health.status -eq 'ok') {
             Write-Host "$Target is healthy at http://localhost:$Port"
             exit 0
         }
     }
     catch {
-        # Give the app another moment to start.
+        # Try again while the app starts.
     }
 }
 
