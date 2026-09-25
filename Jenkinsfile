@@ -17,5 +17,11 @@ pipeline {
                 bat 'npm.cmd test'
             }
         }
+        stage('Code Quality') {
+            steps {
+                bat 'npm.cmd run lint'
+            }
+        }
+
     }
 }
