@@ -7,6 +7,7 @@ pipeline {
                 bat 'node --version'
                 bat 'npm.cmd --version'
                 bat 'npm.cmd ci'
+                bat 'if exist borroweditemstracker-*.tgz del /q borroweditemstracker-*.tgz'
                 bat 'npm.cmd pack'
                 archiveArtifacts artifacts: '*.tgz', fingerprint: true
             }
