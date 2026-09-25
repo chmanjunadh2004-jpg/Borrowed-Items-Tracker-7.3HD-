@@ -10,7 +10,7 @@ pipeline {
     }
 
     environment {
-        ALERT_TO = 'YOUR_EMAIL@example.com'
+        ALERT_TO = 'ch.manjunadh2004@gmail.com'
     }
 
     stages {
